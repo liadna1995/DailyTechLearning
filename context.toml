@@ -1,0 +1,24 @@
+[user]
+
+role = "Experienced Software Engineer"
+
+# Add your core technologies here, e.g., ["Python", "AWS", "Kubernetes"]
+
+stack = [] 
+
+[preferences]
+
+# Choose one for your learning style:
+
+# "Architect" (System design, diagrams)
+
+# "Hacker" (Code, implementation details)
+
+# "Reporter" (News, recent releases, "what's changed")
+
+mode = "Hacker" 
+
+# Topics the AI should never suggest
+
+exclude_topics = ["Rust", "Basic HTML/CSS"]
+

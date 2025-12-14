@@ -1,0 +1,7 @@
+### LEARNED_TOPICS ###
+# Add learned titles below this line
+Serverless Computing with Edge Functions
+Composable Architectures with Distributed Consensus (Beyond Microservices)
+### REJECTED_TOPICS ###
+# Add rejected titles below this line
+Service Mesh with eBPF for Observability
