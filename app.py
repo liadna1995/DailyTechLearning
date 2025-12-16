@@ -1,6 +1,19 @@
 import streamlit as st
 import os
+import sys
+from dotenv import load_dotenv
 import ssl
+
+# --- DETERMINE BASE DIRECTORY ---
+# We want logs, history, and config to live next to the executable, 
+# even when running from the PyInstaller temp folder.
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Load environment variables
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 # --- SSL CERTIFICATE FIX FOR CORPORATE ENVIRONMENTS (Must be first) ---
 # Force disable SSL verification for requests/aiohttp/urllib
@@ -25,6 +38,7 @@ import logging
 import io
 import asyncio
 import edge_tts
+import html
 import streamlit.components.v1 as components
 
 # Configure logging to write to a file and the console
@@ -32,17 +46,21 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("app.log"),  # Saves logs to a file
+        logging.FileHandler(os.path.join(BASE_DIR, "app.log")),  # Saves logs to a file next to the exe
         logging.StreamHandler()          # Prints logs to the terminal
     ]
 )
 logger = logging.getLogger(__name__)
 
 # --- 1. SETUP & CONFIGURATION ---
-# CRITICAL: PASTE YOUR GEMINI API KEY HERE
-API_KEY = "AIzaSyADjrrZQrB9PXkERYJ-AxNNCMULtzxKkoE" 
-CONTEXT_FILE = "context.toml"
-HISTORY_FILE = "history.txt"
+# Load API Key from environment variable
+API_KEY = os.getenv("GEMINI_API_KEY")
+if not API_KEY:
+    st.error("❌ GEMINI_API_KEY not found in .env file. Please create one.")
+    st.stop()
+
+CONTEXT_FILE = os.path.join(BASE_DIR, "context.toml")
+HISTORY_FILE = os.path.join(BASE_DIR, "history.txt")
 
 # Initialize the Gemini Client using the API Key
 try:
@@ -61,7 +79,7 @@ try:
     config = toml.load(CONTEXT_FILE)
 except:
     st.error(f"Error: Could not load {CONTEXT_FILE}. Using defaults.")
-    config = {"user": {"role": "Developer", "stack": []}, "preferences": {"mode": "Architect", "exclude_topics": []}}
+    config = {"user": {"role": "Developer", "stack": []}, "preferences": {"mode": "Architect", "model": "gemini-2.0-flash-lite", "exclude_topics": []}}
 
 
 # --- 2. TOKEN-EFFICIENT HISTORY MANAGER (No changes needed here) ---
@@ -117,7 +135,10 @@ def generate_lesson(rejected_in_session=[]):
     role = config['user']['role']
     mode = config['preferences']['mode']
     exclude = config['preferences'].get('exclude_topics', [])
-    stack_text = f"Stack focus: {config['user']['stack']}" if config['user']['stack'] else "Focus: General Advanced Tech Trends"
+    if config['user']['stack']:
+        stack_text = f"Stack focus: {config['user']['stack']}"
+    else:
+        stack_text = "Focus: Concepts, tools, or patterns that are currently gaining traction and have high potential utility for a modern software engineer, but are not yet mainstream standard."
     
     prompt = f"""
     Act as a tech mentor for a {role}.
@@ -139,12 +160,27 @@ def generate_lesson(rejected_in_session=[]):
             {{"title": "Slide 4: Challenges & Best Practices", "points": ["detail 1", "detail 2", "detail 3"]}}
         ],
         "diagram": "Simple Mermaid JS code (graph TD). Keep it simple and clean. NO markdown backticks.",
+        "code_snippet": {{ 
+            "language": "C# (or relevant stack language)", 
+            "code": "A PRACTICAL, REAL-WORLD implementation example. No 'Hello World'. Show how to actually use the concept in production code.", 
+            "description": "Explanation of the implementation." 
+        }},
+        "resources": [
+             {{ "label": "Official Docs (MUST BE REAL)", "url": "https://..." }},
+             {{ "label": "Tutorial/Article (MUST BE REAL)", "url": "https://..." }}
+        ],
         "quiz": [
-            {{"question": "Quiz Question 1", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": "Option B", "explanation": "Why B is correct."}},
-            {{"question": "Quiz Question 2", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": "Option A", "explanation": "Why A is correct."}},
-            {{"question": "BONUS / TOUGH Question", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": "Option C", "explanation": "Deep dive explanation."}}
+            {{"question": "Quiz Question 1", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": "The Correct Option", "explanation": "Why it is correct."}},
+            {{"question": "Quiz Question 2", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": "The Correct Option", "explanation": "Why it is correct."}},
+            {{"question": "Quiz Question 3", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": "The Correct Option", "explanation": "Why it is correct."}},
+            {{"question": "Quiz Question 4", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": "The Correct Option", "explanation": "Why it is correct."}},
+            {{"question": "BONUS / TOUGH Question", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": "The Correct Option", "explanation": "Deep dive explanation."}}
         ]
     }}
+    IMPORTANT: 
+    1. The quiz MUST have exactly 5 questions.
+    2. Code snippets must be substantive and practical, not trivial.
+    3. Resources MUST be valid, existing URLs. Prefer official documentation or well-known tech blogs.
     """
     
     # Define the configuration for the API call
@@ -156,8 +192,9 @@ def generate_lesson(rejected_in_session=[]):
     try:
         # Call the API using the client object
         # Using gemini-2.0-flash-lite as the most cost-effective option available
+        model_name = config['preferences'].get('model', 'gemini-2.0-flash-lite')
         response = client.models.generate_content(
-            model='gemini-2.0-flash-lite', 
+            model=model_name, 
             contents=prompt,
             config=config_params
         )
@@ -228,24 +265,40 @@ def render_mermaid(code):
     estimated_height = max(600, line_count * 40) # Estimate ~40px per line
 
     # Improved HTML/JS for robust Mermaid rendering
+    # We escape the code to ensure HTML safety, although Mermaid usually handles it.
+    escaped_code = html.escape(clean_code)
+
     html_code = f"""
     <!DOCTYPE html>
     <html>
     <head>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.0/mermaid.min.js"></script>
+    <style>
+        .mermaid {{
+            display: flex;
+            justify-content: center;
+        }}
+    </style>
     </head>
     <body style="background-color: white; margin: 0; padding: 20px;">
-    <div class="mermaid" style="display: flex; justify-content: center;">
-    {clean_code}
+    <div class="mermaid">
+    {escaped_code}
     </div>
     <script>
         document.addEventListener('DOMContentLoaded', function() {{
-            mermaid.initialize({{
-                startOnLoad: true,
-                theme: 'base',
-                themeVariables: {{ 'primaryColor': '#ff4b4b', 'edgeLabelBackground':'#ffffff', 'tertiaryColor': '#f0f2f6' }},
-                securityLevel: 'loose',
-            }});
+            try {{
+                mermaid.initialize({{
+                    startOnLoad: true,
+                    theme: 'base',
+                    themeVariables: {{ 'primaryColor': '#ff4b4b', 'edgeLabelBackground':'#ffffff', 'tertiaryColor': '#f0f2f6' }},
+                    securityLevel: 'loose',
+                }});
+            }} catch (e) {{
+                const err = document.createElement('div');
+                err.textContent = 'Mermaid Error: ' + e.message;
+                err.style.color = 'red';
+                document.body.appendChild(err);
+            }}
         }});
     </script>
     </body>
@@ -262,7 +315,7 @@ if 'session_rejected' not in st.session_state:
 if 'current_slide_index' not in st.session_state:
     st.session_state.current_slide_index = 0
 
-st.title("🚀 Daily Tech 15")
+st.title("🚀 Daily Tech")
 st.markdown(f"**Mode:** `{config['preferences']['mode']}` | **Role:** `{config['user']['role']}`")
 st.divider()
 
@@ -307,10 +360,18 @@ if st.session_state.lesson:
     
     # Main Content Area - Vertical Layout (Long Page)
     
-    # 1. Visuals (Infographic)
+    # 1. Visuals (Infographic or Code)
     st.subheader("🎨 Visual Concept")
+    
+    # If we have code, show it (Hacker Mode preference)
+    if 'code_snippet' in content and content['code_snippet']:
+        st.caption(content['code_snippet']['description'])
+        st.code(content['code_snippet']['code'], language=content['code_snippet']['language'])
+
     # Increase height to avoid scrolling and allow full width
-    clean_code = render_mermaid(content['diagram'])
+    clean_code = ""
+    if 'diagram' in content and content['diagram']:
+        clean_code = render_mermaid(content['diagram'])
     
     # Debugging Tool for the User/Dev
     with st.expander("🛠️ Debug Visual Data"):
@@ -388,6 +449,12 @@ if st.session_state.lesson:
                 else:
                     st.error(f"Incorrect. The correct answer is: {q['answer']}. \n\n{q.get('explanation', '')}")
             st.write("") # Spacer
+
+    # Deep Dive Resources
+    if 'resources' in content and content['resources']:
+        st.subheader("📚 Deep Dive Resources")
+        for res in content['resources']:
+            st.markdown(f"- [{res['label']}]({res['url']})")
 
     st.divider()
     

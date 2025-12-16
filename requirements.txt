@@ -3,3 +3,5 @@ google-genai
 toml
 gTTS
 edge-tts
+python-dotenv
+pyinstaller

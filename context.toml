@@ -18,6 +18,9 @@ stack = []
 
 mode = "Hacker" 
 
+# Model selection (gemini-2.0-flash-lite, gemini-1.5-flash, gemini-1.5-pro, etc.)
+model = "gemini-2.5-pro"
+
 # Topics the AI should never suggest
 
 exclude_topics = ["Rust", "Basic HTML/CSS"]

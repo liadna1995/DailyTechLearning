@@ -2,6 +2,8 @@
 # Add learned titles below this line
 Serverless Computing with Edge Functions
 Composable Architectures with Distributed Consensus (Beyond Microservices)
+Differential Privacy: The Art of Anonymizing Data
+Federated Learning: The Decentralized AI Revolution
 ### REJECTED_TOPICS ###
 # Add rejected titles below this line
 Service Mesh with eBPF for Observability
