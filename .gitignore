@@ -1,2 +1,9 @@
 app.log
+__pycache__
+build
+dist
+.env
+dailytechlearning.spec
+setupscheduler.spec
+
 
