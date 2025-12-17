@@ -138,49 +138,73 @@ def generate_lesson(rejected_in_session=[]):
     if config['user']['stack']:
         stack_text = f"Stack focus: {config['user']['stack']}"
     else:
-        stack_text = "Focus: Concepts, tools, or patterns that are currently gaining traction and have high potential utility for a modern software engineer, but are not yet mainstream standard."
+        stack_text = f"Focus: Concepts, tools, or patterns that are currently gaining traction and have high potential utility for a modern {role}, but are not yet mainstream standard."
     
+    # --- DYNAMIC PROMPT CONSTRUCTION ---
+    
+    base_json = """
+        "title": "Topic Title",
+        "summary": "Engaging and fun technical explanation (2 paragraphs). Use analogies.",
+        "slides": [
+            {"title": "Slide 1: Concept Core", "points": ["detail 1", "detail 2", "detail 3"]},
+            {"title": "Slide 2: key details", "points": ["detail 1", "detail 2", "detail 3"]},
+            {"title": "Slide 3: Use Cases", "points": ["detail 1", "detail 2", "detail 3"]},
+            {"title": "Slide 4: Best Practices", "points": ["detail 1", "detail 2", "detail 3"]}
+        ],
+        "resources": [
+             { "label": "Official Docs (MUST BE REAL)", "url": "https://..." },
+             { "label": "Tutorial/Article (MUST BE REAL)", "url": "https://..." }
+        ],
+        "quiz": [
+            {"question": "Q1", "options": ["A", "B", "C", "D"], "answer": "Option A", "explanation": "Why..."},
+            {"question": "Q2", "options": ["A", "B", "C", "D"], "answer": "Option A", "explanation": "Why..."},
+            {"question": "Q3", "options": ["A", "B", "C", "D"], "answer": "Option A", "explanation": "Why..."},
+            {"question": "Q4", "options": ["A", "B", "C", "D"], "answer": "Option A", "explanation": "Why..."},
+            {"question": "BONUS", "options": ["A", "B", "C", "D"], "answer": "Option A", "explanation": "Why..."}
+        ]
+    """
+
+    if mode == "Reporter":
+        task_instruction = "Task: Act as a Tech Journalist. Provide a news-style deep dive on a trending technology, release, or shift in the industry. Focus on the 'What', 'Why', and 'Who' (adoption). Do NOT provide code snippets or diagrams."
+        mode_specific_json = "" # Reporter gets no code/diagrams
+        
+    elif mode == "Hacker":
+        task_instruction = "Task: Act as a Senior Dev. Teach me a new concept with a heavy focus on implementation. You MUST provide a substantive, real-world code example."
+        mode_specific_json = """,
+        "code_snippet": { 
+            "language": "C# (or relevant stack language)", 
+            "code": "A PRACTICAL, REAL-WORLD implementation example. No 'Hello World'. Show how to actually use the concept in production code.", 
+            "description": "Explanation of the implementation." 
+        }
+        """
+
+    elif mode == "Architect":
+        task_instruction = "Task: Act as a System Architect. Explain a design pattern, architectural concept, or system structure. You MUST provide a Mermaid JS diagram."
+        mode_specific_json = """,
+        "diagram": "Simple Mermaid JS code (graph TD/flowchart). Keep it simple and clean. NO markdown backticks."
+        """
+    
+    else: # Fallback
+        task_instruction = "Task: Teach me ONE new, advanced concept."
+        mode_specific_json = ""
+
     prompt = f"""
     Act as a tech mentor for a {role}.
     Context: {stack_text}.
-    Mode: {mode} (Architect=Diagrams, Hacker=Code, Reporter=News).
+    Mode: {mode}.
     Avoid these topics: {all_seen_topics} + {exclude}.
 
-    Task: Teach me ONE new, advanced concept. Provide a comprehensive deep dive (approx 5-10 mins reading time).
+    {task_instruction}
     Make the tone engaging and fun, using analogies where appropriate.
     
     Output strictly valid JSON:
     {{
-        "title": "Topic Title",
-        "summary": "Engaging and fun technical explanation of the concept (2-3 paragraphs). Use analogies.",
-        "slides": [
-            {{"title": "Slide 1: Concept Core", "points": ["detail 1", "detail 2", "detail 3"]}},
-            {{"title": "Slide 2: Architecture/Mechanism", "points": ["detail 1", "detail 2", "detail 3"]}},
-            {{"title": "Slide 3: Use Cases & Benefits", "points": ["detail 1", "detail 2", "detail 3"]}},
-            {{"title": "Slide 4: Challenges & Best Practices", "points": ["detail 1", "detail 2", "detail 3"]}}
-        ],
-        "diagram": "Simple Mermaid JS code (graph TD). Keep it simple and clean. NO markdown backticks.",
-        "code_snippet": {{ 
-            "language": "C# (or relevant stack language)", 
-            "code": "A PRACTICAL, REAL-WORLD implementation example. No 'Hello World'. Show how to actually use the concept in production code.", 
-            "description": "Explanation of the implementation." 
-        }},
-        "resources": [
-             {{ "label": "Official Docs (MUST BE REAL)", "url": "https://..." }},
-             {{ "label": "Tutorial/Article (MUST BE REAL)", "url": "https://..." }}
-        ],
-        "quiz": [
-            {{"question": "Quiz Question 1", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": "The Correct Option", "explanation": "Why it is correct."}},
-            {{"question": "Quiz Question 2", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": "The Correct Option", "explanation": "Why it is correct."}},
-            {{"question": "Quiz Question 3", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": "The Correct Option", "explanation": "Why it is correct."}},
-            {{"question": "Quiz Question 4", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": "The Correct Option", "explanation": "Why it is correct."}},
-            {{"question": "BONUS / TOUGH Question", "options": ["Option A", "Option B", "Option C", "Option D"], "answer": "The Correct Option", "explanation": "Deep dive explanation."}}
-        ]
+        {base_json}
+        {mode_specific_json}
     }}
     IMPORTANT: 
     1. The quiz MUST have exactly 5 questions.
-    2. Code snippets must be substantive and practical, not trivial.
-    3. Resources MUST be valid, existing URLs. Prefer official documentation or well-known tech blogs.
+    2. Resources MUST be valid, existing URLs.
     """
     
     # Define the configuration for the API call
