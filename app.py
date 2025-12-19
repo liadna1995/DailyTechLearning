@@ -130,7 +130,11 @@ def generate_lesson(rejected_in_session=[]):
 
     # Combine all seen topics to blacklist
     permanent_history = load_history()
-    all_seen_topics = permanent_history['rejected'] + permanent_history['learned'] + rejected_in_session
+    
+    # Token Optimization: Only send the last 50 topics to the LLM to save context
+    # We will filter out duplicates in Python after generation
+    full_history = permanent_history['rejected'] + permanent_history['learned'] + rejected_in_session
+    recent_history = full_history[-50:] if len(full_history) > 50 else full_history
     
     role = config['user']['role']
     mode = config['preferences']['mode']
@@ -165,23 +169,30 @@ def generate_lesson(rejected_in_session=[]):
     """
 
     if mode == "Reporter":
-        task_instruction = "Task: Act as a Tech Journalist. Provide a news-style deep dive on a trending technology, release, or shift in the industry. Focus on the 'What', 'Why', and 'Who' (adoption). Do NOT provide code snippets or diagrams."
-        mode_specific_json = "" # Reporter gets no code/diagrams
+        task_instruction = "Task: Act as a Tech Journalist. Provide a news-style deep dive on a trending technology, release, or shift in the industry. Focus on the 'What', 'Why', and 'Who' (adoption). Include a 'Industry Pulse' section covering adoption trends and major companies using it. Do NOT provide code snippets or diagrams."
+        mode_specific_json = """,
+        "news_pulse": ["Bullet point 1 on adoption/news", "Bullet point 2", "Bullet point 3"],
+        """  
         
     elif mode == "Hacker":
-        task_instruction = "Task: Act as a Senior Dev. Teach me a new concept with a heavy focus on implementation. You MUST provide a substantive, real-world code example."
+        task_instruction = "Task: Act as a Senior Dev. Teach me a new concept with a heavy focus on implementation. You MUST provide a substantive, real-world code example AND a conceptual diagram."
         mode_specific_json = """,
         "code_snippet": { 
             "language": "C# (or relevant stack language)", 
             "code": "A PRACTICAL, REAL-WORLD implementation example. No 'Hello World'. Show how to actually use the concept in production code.", 
             "description": "Explanation of the implementation." 
-        }
+        },
+        "diagram": "Simple Mermaid JS code (graph TD/flowchart) explaining the flow or structure. Keep it simple and clean. NO markdown backticks."
         """
 
     elif mode == "Architect":
-        task_instruction = "Task: Act as a System Architect. Explain a design pattern, architectural concept, or system structure. You MUST provide a Mermaid JS diagram."
+        task_instruction = "Task: Act as a System Architect. Explain a design pattern, architectural concept, or system structure. You MUST provide a Mermaid JS diagram AND a Trade-offs analysis."
         mode_specific_json = """,
-        "diagram": "Simple Mermaid JS code (graph TD/flowchart). Keep it simple and clean. NO markdown backticks."
+        "diagram": "Simple Mermaid JS code (graph TD/flowchart). Keep it simple and clean. NO markdown backticks.",
+        "tradeoffs": {
+            "pros": ["Pro 1", "Pro 2"],
+            "cons": ["Con 1", "Con 2"]
+        }
         """
     
     else: # Fallback
@@ -192,7 +203,7 @@ def generate_lesson(rejected_in_session=[]):
     Act as a tech mentor for a {role}.
     Context: {stack_text}.
     Mode: {mode}.
-    Avoid these topics: {all_seen_topics} + {exclude}.
+    Avoid these topics: {recent_history} + {exclude}.
 
     {task_instruction}
     Make the tone engaging and fun, using analogies where appropriate.
@@ -213,29 +224,44 @@ def generate_lesson(rejected_in_session=[]):
         temperature=0.8
     )
 
-    try:
-        # Call the API using the client object
-        # Using gemini-2.0-flash-lite as the most cost-effective option available
-        model_name = config['preferences'].get('model', 'gemini-2.0-flash-lite')
-        response = client.models.generate_content(
-            model=model_name, 
-            contents=prompt,
-            config=config_params
-        )
-        # The new SDK structure uses response.text for the content string
-        return json.loads(response.text)
-    except errors.ClientError as e:
-        if e.code == 429:
-             logger.warning("Quota Exceeded (429): Please wait a moment before trying again.")
-             st.warning("⚠️ High Traffic: We hit the AI's rate limit. Please wait 1 minute and try again.")
-        else:
-             logger.error(f"Client Error: {e}", exc_info=True)
-             st.error(f"AI Error: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Content Generation Failed: {e}", exc_info=True) # Captures traceback
-        st.error(f"AI Error: Could not generate content. Check your context/key. Details: {e}")
-        return None
+    # Retry loop for unique topics (Python-side filtering)
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Call the API using the client object
+            # Using gemini-2.0-flash-lite as the most cost-effective option available
+            model_name = config['preferences'].get('model', 'gemini-2.0-flash-lite')
+            response = client.models.generate_content(
+                model=model_name, 
+                contents=prompt,
+                config=config_params
+            )
+            # The new SDK structure uses response.text for the content string
+            lesson_data = json.loads(response.text)
+            
+            # Check if topic was actually in the full history (since we only sent partial history)
+            if lesson_data['title'] in full_history:
+                logger.warning(f"Duplicate topic generated: {lesson_data['title']}. Retrying... ({attempt+1}/{max_retries})")
+                continue # Try again
+                
+            return lesson_data
+            
+        except errors.ClientError as e:
+            if e.code == 429:
+                 logger.warning("Quota Exceeded (429): Please wait a moment before trying again.")
+                 st.warning("⚠️ High Traffic: We hit the AI's rate limit. Please wait 1 minute and try again.")
+                 return None
+            else:
+                 logger.error(f"Client Error: {e}", exc_info=True)
+                 st.error(f"AI Error: {e}")
+                 return None
+        except Exception as e:
+            logger.error(f"Content Generation Failed: {e}", exc_info=True) # Captures traceback
+            st.error(f"AI Error: Could not generate content. Check your context/key. Details: {e}")
+            return None
+            
+    st.warning("Could not generate a unique topic after multiple attempts. Try clearing some history or changing focus.")
+    return None
 
 # --- 4. THE UI (No changes needed here) ---
 
@@ -340,7 +366,10 @@ if 'current_slide_index' not in st.session_state:
     st.session_state.current_slide_index = 0
 
 st.title("🚀 Daily Tech")
-st.markdown(f"**Mode:** `{config['preferences']['mode']}` | **Role:** `{config['user']['role']}`")
+# Gamification: Show XP / Learned Count
+history = load_history()
+learned_count = len(history['learned'])
+st.markdown(f"**Mode:** `{config['preferences']['mode']}` | **Role:** `{config['user']['role']}` | **XP:** `{learned_count} Topics Learned`")
 st.divider()
 
 # The "Go" Button (Only shows when no lesson is loaded)
@@ -358,14 +387,16 @@ if st.session_state.lesson:
     # Top Section: Title & Summary
     st.header(content['title'])
     
-    # improved readability: use full width
-    st.info(content['summary'])
+    # improved readability: use full width markdown
+    st.markdown(content['summary'])
 
     # Audio Player for Summary with edge-tts (High Quality)
     try:
         async def generate_audio_stream(text):
-             # en-US-EricNeural is often considered more engaging/conversational
-             communicate = edge_tts.Communicate(text, "en-US-EricNeural") 
+             # en-US-ChristopherNeural is deep and engaging
+             # Remove markdown artifacts for cleaner speech
+             clean_text = re.sub(r'[\*\#]', '', text)
+             communicate = edge_tts.Communicate(clean_text, "en-US-ChristopherNeural") 
              audio_data = b""
              async for chunk in communicate.stream():
                  if chunk["type"] == "audio":
@@ -389,7 +420,7 @@ if st.session_state.lesson:
     
     # If we have code, show it (Hacker Mode preference)
     if 'code_snippet' in content and content['code_snippet']:
-        st.caption(content['code_snippet']['description'])
+        st.subheader(content['code_snippet']['description'])
         st.code(content['code_snippet']['code'], language=content['code_snippet']['language'])
 
     # Increase height to avoid scrolling and allow full width
@@ -405,6 +436,30 @@ if st.session_state.lesson:
         st.json(content)
 
     st.divider()
+
+    # Mode Specific Extra Sections (Displayed BEFORE Slides for better flow)
+    if 'news_pulse' in content and content['news_pulse']:
+        st.subheader("📰 Industry Pulse")
+        # Ensure it renders as a list if it's not already
+        if isinstance(content['news_pulse'], list):
+             for item in content['news_pulse']:
+                 st.markdown(f"- {item}")
+        else:
+             st.markdown(content['news_pulse'])
+        st.divider()
+        
+    if 'tradeoffs' in content and content['tradeoffs']:
+        st.subheader("⚖️ Trade-off Analysis")
+        c_pros, c_cons = st.columns(2)
+        with c_pros:
+            st.success("### ✅ Pros")
+            for pro in content['tradeoffs']['pros']:
+                st.write(f"- {pro}")
+        with c_cons:
+            st.error("### ❌ Cons")
+            for con in content['tradeoffs']['cons']:
+                st.write(f"- {con}")
+        st.divider()
 
     # 2. Slides (Key Takeaways)
     st.subheader("💡 Key Takeaways")
@@ -461,31 +516,39 @@ if st.session_state.lesson:
     if 'quiz' in content:
         st.subheader("🧠 Knowledge Check")
         
-        # Use full width for quiz questions
-        for i, q in enumerate(content['quiz']):
-            st.markdown(f"##### {i+1}. {q['question']}")
-            # Use a unique key for each question's radio button
-            answer = st.radio(f"Select an answer for Q{i+1}:", q['options'], key=f"quiz_{i}", index=None, label_visibility="collapsed")
-            
-            if answer:
-                if answer == q['answer']:
-                    st.success(f"Correct! {q.get('explanation', '')}")
-                else:
-                    st.error(f"Incorrect. The correct answer is: {q['answer']}. \n\n{q.get('explanation', '')}")
-            st.write("") # Spacer
+        @st.fragment
+        def display_quiz(quiz_data):
+            # Use full width for quiz questions
+            for i, q in enumerate(quiz_data):
+                st.markdown(f"##### {i+1}. {q['question']}")
+                # Use a unique key for each question's radio button
+                answer = st.radio(f"Select an answer for Q{i+1}:", q['options'], key=f"quiz_{i}", index=None, label_visibility="collapsed")
+                
+                if answer:
+                    if answer == q['answer']:
+                        st.success(f"Correct! {q.get('explanation', '')}")
+                    else:
+                        st.error(f"Incorrect. The correct answer is: {q['answer']}. \n\n{q.get('explanation', '')}")
+                st.write("") # Spacer
+
+        display_quiz(content['quiz'])
 
     # Deep Dive Resources
     if 'resources' in content and content['resources']:
         st.subheader("📚 Deep Dive Resources")
         for res in content['resources']:
             st.markdown(f"- [{res['label']}]({res['url']})")
+        
+        # Add dynamic YouTube Search Link
+        search_query = content['title'].replace(" ", "+") + "+tech+tutorial"
+        st.markdown(f"- [📺 Search '{content['title']}' on YouTube](https://www.youtube.com/results?search_query={search_query})")
 
     st.divider()
     
     # Action Buttons (Saving Action)
     c1, c2, c3 = st.columns([1, 1, 2])
     
-    if c1.button("⏭️ Skip (Temp)"):
+    if c1.button("⏭️ Skip"):
         # Add to temporary session reject list and rerun to generate new topic
         st.session_state.session_rejected.append(content['title'])
         st.session_state.lesson = None
