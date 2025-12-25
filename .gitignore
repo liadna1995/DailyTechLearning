@@ -5,5 +5,4 @@ dist
 .env
 dailytechlearning.spec
 setupscheduler.spec
-
-
+history.txt

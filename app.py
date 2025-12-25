@@ -61,17 +61,24 @@ if not API_KEY:
 
 CONTEXT_FILE = os.path.join(BASE_DIR, "context.toml")
 HISTORY_FILE = os.path.join(BASE_DIR, "history.txt")
+LESSONS_DIR = os.path.join(BASE_DIR, "lessons")
+
+# Ensure lessons directory exists
+os.makedirs(LESSONS_DIR, exist_ok=True)
 
 # Initialize the Gemini Client using the API Key
-try:
-    # This creates the client object, replacing the old configure() function
-    client = genai.Client(api_key=API_KEY)
-    logger.info("Gemini Client initialized successfully.") # Log success
-except Exception as e:
-    logger.error(f"Failed to initialize Gemini Client: {e}", exc_info=True) # Log full error
-    st.error(f"Initialization Error: Could not create Gemini Client. Check API Key or library installation. Details: {e}")
-    # In a real app, you would exit here. We'll let the Streamlit error handle it for now.
-    client = None
+@st.cache_resource
+def init_gemini_client():
+    try:
+        client = genai.Client(api_key=API_KEY)
+        logger.info("Gemini Client initialized successfully.")
+        return client
+    except Exception as e:
+        logger.error(f"Failed to initialize Gemini Client: {e}", exc_info=True)
+        st.error(f"Initialization Error: Could not create Gemini Client. Check API Key or library installation. Details: {e}")
+        return None
+
+client = init_gemini_client()
 
 
 # Load Settings
@@ -122,9 +129,73 @@ def save_history(learned_titles, rejected_titles):
         f.write(new_content.strip())
 
 
+# --- LESSON STORAGE FUNCTIONS ---
+
+def sanitize_filename(title):
+    """Convert lesson title to safe filename."""
+    sanitized = re.sub(r'[^\w\s-]', '', title)
+    sanitized = re.sub(r'[-\s]+', '_', sanitized)
+    return sanitized[:50]
+
+def save_lesson(lesson_data):
+    """Save lesson JSON to file, return file path."""
+    from datetime import datetime
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    title_safe = sanitize_filename(lesson_data.get('title', 'untitled'))
+    filename = f"lesson_{timestamp}_{title_safe}.json"
+    file_path = os.path.join(LESSONS_DIR, filename)
+    
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(lesson_data, f, indent=2, ensure_ascii=False)
+    
+    logger.info(f"Lesson saved: {file_path}")
+    return file_path
+
+def load_lesson(file_path):
+    """Load lesson JSON from file."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to load lesson from {file_path}: {e}")
+        return None
+
+def list_saved_lessons():
+    """Scan lessons directory, return list of available lessons with metadata."""
+    lessons = []
+    
+    if not os.path.exists(LESSONS_DIR):
+        return lessons
+    
+    for filename in os.listdir(LESSONS_DIR):
+        if filename.endswith('.json') and filename.startswith('lesson_'):
+            file_path = os.path.join(LESSONS_DIR, filename)
+            try:
+                lesson_data = load_lesson(file_path)
+                if lesson_data and 'title' in lesson_data:
+                    # Extract timestamp from filename
+                    parts = filename.replace('.json', '').split('_')
+                    if len(parts) >= 3:
+                        date_str = parts[1]
+                        time_str = parts[2]
+                        lessons.append({
+                            'title': lesson_data['title'],
+                            'file_path': file_path,
+                            'date': f"{date_str}_{time_str}"
+                        })
+            except Exception as e:
+                logger.warning(f"Skipping corrupted lesson file {filename}: {e}")
+                continue
+    
+    # Sort by date (newest first)
+    lessons.sort(key=lambda x: x['date'], reverse=True)
+    return lessons
+
+
 # --- 3. THE AI BRAIN (MODIFIED) ---
 
-def generate_lesson(rejected_in_session=[]):
+def generate_lesson(rejected_in_session=[], custom_title=None):
     if not client:
         return None # Exit if client wasn't initialized successfully
 
@@ -182,13 +253,13 @@ def generate_lesson(rejected_in_session=[]):
             "code": "A PRACTICAL, REAL-WORLD implementation example. No 'Hello World'. Show how to actually use the concept in production code.", 
             "description": "Explanation of the implementation." 
         },
-        "diagram": "Simple Mermaid JS code (graph TD/flowchart) explaining the flow or structure. Keep it simple and clean. NO markdown backticks."
+        "diagram": "Mermaid JS graph TD. IMPORTANT: Enclose ALL node labels in double quotes to avoid syntax errors. Example: A[\\"Label with [brackets]\\"]"
         """
 
     elif mode == "Architect":
         task_instruction = "Task: Act as a System Architect. Explain a design pattern, architectural concept, or system structure. You MUST provide a Mermaid JS diagram AND a Trade-offs analysis."
         mode_specific_json = """,
-        "diagram": "Simple Mermaid JS code (graph TD/flowchart). Keep it simple and clean. NO markdown backticks.",
+        "diagram": "Mermaid JS graph TD. IMPORTANT: Enclose ALL node labels in double quotes. Example: A[\\"Label with (parens)\\"]",
         "tradeoffs": {
             "pros": ["Pro 1", "Pro 2"],
             "cons": ["Con 1", "Con 2"]
@@ -199,6 +270,11 @@ def generate_lesson(rejected_in_session=[]):
         task_instruction = "Task: Teach me ONE new, advanced concept."
         mode_specific_json = ""
 
+    if custom_title:
+        title_instruction = f"The lesson title MUST be exactly: '{custom_title}'. Generate all other content based on this title."
+    else:
+        title_instruction = "Generate a new, unique topic title."
+    
     prompt = f"""
     Act as a tech mentor for a {role}.
     Context: {stack_text}.
@@ -206,6 +282,7 @@ def generate_lesson(rejected_in_session=[]):
     Avoid these topics: {recent_history} + {exclude}.
 
     {task_instruction}
+    {title_instruction}
     Make the tone engaging and fun, using analogies where appropriate.
     
     Output strictly valid JSON:
@@ -310,13 +387,8 @@ def render_mermaid(code):
     # Robust cleanup: Extract only the mermaid code
     clean_code = extract_mermaid_code(code)
 
-    # Dynamic height calculation based on line count to minimize scrolling
-    line_count = len(clean_code.split('\n'))
-    estimated_height = max(600, line_count * 40) # Estimate ~40px per line
-
-    # Improved HTML/JS for robust Mermaid rendering
-    # We escape the code to ensure HTML safety, although Mermaid usually handles it.
-    escaped_code = html.escape(clean_code)
+    # Escape the code for JavaScript/JSON to handle special characters properly
+    escaped_code = json.dumps(clean_code)
 
     html_code = f"""
     <!DOCTYPE html>
@@ -324,36 +396,73 @@ def render_mermaid(code):
     <head>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.0/mermaid.min.js"></script>
     <style>
-        .mermaid {{
+        body {{
+            background-color: white; 
+            margin: 0; 
+            padding: 0; 
+            font-family: sans-serif;
+        }}
+        .mermaid-container {{
             display: flex;
             justify-content: center;
+            width: 100%;
+        }}
+        #error-container {{
+            color: #D8000C;
+            background-color: #FFBABA;
+            border: 1px solid #D8000C;
+            margin: 10px;
+            padding: 10px;
+            border-radius: 5px;
+            display: none; /* Hidden by default */
+            font-size: 12px;
+            white-space: pre-wrap;
         }}
     </style>
     </head>
-    <body style="background-color: white; margin: 0; padding: 20px;">
-    <div class="mermaid">
-    {escaped_code}
-    </div>
+    <body>
+    
+    <div id="error-container"></div>
+    <div class="mermaid-container" id="mermaid-diagram"></div>
+
     <script>
-        document.addEventListener('DOMContentLoaded', function() {{
+        document.addEventListener('DOMContentLoaded', async function() {{
+            var mermaidCode = {escaped_code};
+            var container = document.getElementById('mermaid-diagram');
+            var errorContainer = document.getElementById('error-container');
+
             try {{
                 mermaid.initialize({{
-                    startOnLoad: true,
+                    startOnLoad: false,
                     theme: 'base',
-                    themeVariables: {{ 'primaryColor': '#ff4b4b', 'edgeLabelBackground':'#ffffff', 'tertiaryColor': '#f0f2f6' }},
+                    themeVariables: {{ 
+                        'primaryColor': '#ff4b4b', 
+                        'edgeLabelBackground':'#ffffff', 
+                        'tertiaryColor': '#f0f2f6' 
+                    }},
                     securityLevel: 'loose',
                 }});
+
+                // Attempt to render
+                const {{ svg }} = await mermaid.render('graphDiv', mermaidCode);
+                container.innerHTML = svg;
+
             }} catch (e) {{
-                const err = document.createElement('div');
-                err.textContent = 'Mermaid Error: ' + e.message;
-                err.style.color = 'red';
-                document.body.appendChild(err);
+                // Show error explicitly if rendering fails
+                container.style.display = 'none';
+                errorContainer.style.display = 'block';
+                errorContainer.textContent = 'Diagram Syntax Error:\\n' + e.message + '\\n\\nCode:\\n' + mermaidCode;
             }}
         }});
     </script>
     </body>
     </html>
     """
+    
+    # Dynamic height calculation to ensure the iframe is large enough
+    line_count = len(clean_code.split('\n'))
+    estimated_height = max(500, line_count * 50) 
+    
     components.html(html_code, height=estimated_height, scrolling=True)
     return clean_code
 
@@ -364,6 +473,8 @@ if 'session_rejected' not in st.session_state:
     st.session_state.session_rejected = []
 if 'current_slide_index' not in st.session_state:
     st.session_state.current_slide_index = 0
+if 'custom_title' not in st.session_state:
+    st.session_state.custom_title = ""
 
 st.title("🚀 Daily Tech")
 # Gamification: Show XP / Learned Count
@@ -372,13 +483,55 @@ learned_count = len(history['learned'])
 st.markdown(f"**Mode:** `{config['preferences']['mode']}` | **Role:** `{config['user']['role']}` | **XP:** `{learned_count} Topics Learned`")
 st.divider()
 
-# The "Go" Button (Only shows when no lesson is loaded)
+# Load Previous Lesson Dropdown
+saved_lessons = list_saved_lessons()
+if saved_lessons:
+    lesson_options = ["-- Select a saved lesson --"] + [f"{lesson['title']} ({lesson['date']})" for lesson in saved_lessons]
+    
+    def load_selected_lesson():
+        selected_lesson = st.session_state.lesson_selector
+        if selected_lesson and selected_lesson != "-- Select a saved lesson --":
+            selected_index = lesson_options.index(selected_lesson) - 1
+            if selected_index >= 0 and selected_index < len(saved_lessons):
+                loaded_lesson = load_lesson(saved_lessons[selected_index]['file_path'])
+                if loaded_lesson:
+                    st.session_state.lesson = loaded_lesson
+                    st.session_state.current_slide_index = 0
+    
+    selected_lesson = st.selectbox(
+        "📂 Load Previous Lesson", 
+        lesson_options,
+        key="lesson_selector",
+        on_change=load_selected_lesson
+    )
+
+# Generation Options (Only shows when no lesson is loaded)
 if not st.session_state.lesson:
-    if st.button("Teach Me Something New"):
-        with st.spinner("Preparing materials..."):
-            st.session_state.lesson = generate_lesson(st.session_state.session_rejected)
-            st.session_state.current_slide_index = 0
-            st.rerun()
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("Generate Lesson"):
+            with st.spinner("Preparing materials..."):
+                lesson = generate_lesson(st.session_state.session_rejected)
+                if lesson:
+                    st.session_state.lesson = lesson
+                    st.session_state.current_slide_index = 0
+                    save_lesson(lesson)
+                    st.rerun()
+    
+    with col2:
+        custom_title_input = st.text_input("Custom Subject", value=st.session_state.custom_title, key="custom_title_input", placeholder="Enter your subject here...")
+        if st.button("Generate Lesson By Your Own Subject"):
+            if custom_title_input.strip():
+                with st.spinner("Preparing materials..."):
+                    lesson = generate_lesson(st.session_state.session_rejected, custom_title=custom_title_input.strip())
+                    if lesson:
+                        st.session_state.lesson = lesson
+                        st.session_state.current_slide_index = 0
+                        save_lesson(lesson)
+                        st.rerun()
+            else:
+                st.warning("Please enter a subject title.")
 
 # The Lesson View
 if st.session_state.lesson:
