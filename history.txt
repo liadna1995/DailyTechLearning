@@ -4,6 +4,11 @@ Serverless Computing with Edge Functions
 Composable Architectures with Distributed Consensus (Beyond Microservices)
 Differential Privacy: The Art of Anonymizing Data
 Federated Learning: The Decentralized AI Revolution
+Event Sourcing & CQRS: Hacking Time in Your Application State
+Property-Based Testing: Hacking Your Code's Hidden Assumptions
+Vertical Slice Architecture: Hacking Your Monolith for Speed
+Hacking Consistency: The Transactional Outbox Pattern with CDC
 ### REJECTED_TOPICS ###
 # Add rejected titles below this line
 Service Mesh with eBPF for Observability
+Hacking Time with Temporal Tables: Your Database's Built-in DeLorean
